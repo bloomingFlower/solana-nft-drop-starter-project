@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { Program, Provider, web3 } from '@project-serum/anchor';
 import { MintLayout, TOKEN_PROGRAM_ID, Token } from '@solana/spl-token';
@@ -13,6 +13,7 @@ import {
   getNetworkToken,
   CIVIC
 } from './helpers';
+import CountdownTimer from '../CountdownTimer';
 
 const { SystemProgram } = web3;
 const opts = {
@@ -20,7 +21,7 @@ const opts = {
 };
 
 const CandyMachine = ({ walletAddress }) => {
-
+  const [candyMachine, setCandyMachine] = useState(null);
   const getCandyMachineCreator = async (candyMachine) => {
     const candyMachineID = new PublicKey(candyMachine);
     return await web3.PublicKey.findProgramAddress(
@@ -28,6 +29,101 @@ const CandyMachine = ({ walletAddress }) => {
         candyMachineProgram,
     );
   };
+
+  useEffect(() => {
+    getCandyMachineState();
+  }, []);	
+
+  const getProvider = () => {
+    const rpcHost = process.env.REACT_APP_SOLANA_RPC_HOST;
+    console.log("rpcHost:" + process.env.REACT_APP_SOLANA_RPC_HOST);
+    // Create a new connection object
+    const connection = new Connection(rpcHost);
+    
+    // Create a new Solana provider object
+    const provider = new Provider(
+      connection,
+      window.solana,
+      opts.preflightCommitment
+    );
+  
+    return provider;
+  };
+
+// Declare getCandyMachineState as an async method
+const getCandyMachineState = async () => {
+  const provider = getProvider();
+  
+  // Get metadata about your deployed candy machine program
+  const idl = await Program.fetchIdl(candyMachineProgram, provider);
+
+  // Create a program that you can call
+  const program = new Program(idl, candyMachineProgram, provider);
+
+  // Fetch the metadata from your candy machine
+  const candyMachine = await program.account.candyMachine.fetch(
+    process.env.REACT_APP_CANDY_MACHINE_ID
+  );
+  
+  // Parse out all our metadata and log it out
+  const itemsAvailable = candyMachine.data.itemsAvailable.toNumber();
+  const itemsRedeemed = candyMachine.itemsRedeemed.toNumber();
+  const itemsRemaining = itemsAvailable - itemsRedeemed;
+  const goLiveData = candyMachine.data.goLiveDate.toNumber();
+  const presale =
+    candyMachine.data.whitelistMintSettings &&
+    candyMachine.data.whitelistMintSettings.presale &&
+    (!candyMachine.data.goLiveDate ||
+      candyMachine.data.goLiveDate.toNumber() > new Date().getTime() / 1000);
+  
+  // We will be using this later in our UI so let's generate this now
+  const goLiveDateTimeString = `${new Date(
+    goLiveData * 1000
+  ).toLocaleDateString()} @ ${new Date(
+    goLiveData * 1000
+  ).toLocaleTimeString()}`;
+  
+  setCandyMachine({
+    id: process.env.REACT_APP_CANDY_MACHINE_ID,
+    program,
+    state: {
+      itemsAvailable,
+      itemsRedeemed,
+      itemsRemaining,
+      goLiveData,
+      goLiveDateTimeString,
+      isSoldOut: itemsRemaining === 0,
+      isActive:
+        (presale ||
+          candyMachine.data.goLiveDate.toNumber() < new Date().getTime() / 1000) &&
+          (candyMachine.endSettings
+            ? candyMachine.endSettings.endSettingType.date
+            ? candyMachine.endSettings.endDate.toNumber() > new Date().getTime() / 1000
+            : itemsRedeemed < candyMachine.endSettings.number.toNumber()
+        : true),
+      isPresale: presale,
+      goLiveDate: candyMachine.data.goLiveDate,
+      treasury: candyMachine.wallet,
+      tokenMint: candyMachine.tokenMint,
+      gatekeeper: candyMachine.data.gatekeeper,
+      endSettings: candyMachine.endSettings,
+      whitelistMintSettings: candyMachine.data.whitelistMintSettings,
+      hiddenSettings: candyMachine.data.hiddenSettings,
+      price: candyMachine.data.price,
+    },
+  });
+
+  console.log({
+    itemsAvailable,
+    itemsRedeemed,
+    itemsRemaining,
+    goLiveData,
+    goLiveDateTimeString,
+    presale,
+  });
+};
+
+
 
   const getMetadata = async (mint) => {
     return (
@@ -85,7 +181,8 @@ const CandyMachine = ({ walletAddress }) => {
       data: Buffer.from([]),
     });
   };
-
+//ts-node c:/metaplex/js/packages/cli/src/candy-machine-v2-cli.ts upload -e devnet -k  C:\Users\JYY\~\.config\solana\devnet.json -cp config.json ./assets
+ 
   const mintToken = async () => {
     const mint = web3.Keypair.generate();
 
@@ -134,7 +231,7 @@ const CandyMachine = ({ walletAddress }) => {
         1,
       ),
     ];
-  
+    console.log(instructions);
     if (candyMachine.state.gatekeeper) {
       remainingAccounts.push({
         pubkey: (
@@ -256,7 +353,7 @@ const CandyMachine = ({ walletAddress }) => {
     const [candyMachineCreator, creatorBump] = await getCandyMachineCreator(
       candyMachineAddress,
     );
-  
+    
     instructions.push(
       await candyMachine.program.instruction.mintNft(creatorBump, {
         accounts: {
@@ -297,15 +394,38 @@ const CandyMachine = ({ walletAddress }) => {
     return [];
   };
 
+  const renderDropTimer = () => {
+    const currentDate = new Date();
+    const dropDate = new Date(candyMachine.state.goLiveData * 1000);
+  
+    if(currentDate < dropDate) {
+      console.log('Before drop date!');
+      return <CountdownTimer dropDate={dropDate} />;
+    }
+  
+    return <p>{`Drop Date: ${candyMachine.state.goLiveDateTimeString}`}</p>;
+  };
+  
+
   return (
-    <div className="machine-container">
-      <p>Drop Date:</p>
-      <p>Items Minted:</p>
-      <button className="cta-button mint-button" onClick={mintToken}>
-        Mint NFT
-      </button>
-    </div>
+    // Only show this if candyMachine and candyMachine.state is available
+    candyMachine && candyMachine.state && (
+      <div className="machine-container">
+        {renderDropTimer()}
+        <p>{`Items Minted: ${candyMachine.state.itemsRedeemed} / ${candyMachine.state.itemsAvailable}`}</p>
+        {candyMachine.state.itemsRedeemed === candyMachine.state.itemsAvailable ? (
+          <p className="sub-text">Sold Out 🙊</p>
+        ) : (
+        <button className="cta-button mint-button" onClick={mintToken}>
+            Mint NFT
+        </button>
+        )}
+      </div>
+    )
   );
+
+  
 };
+
 
 export default CandyMachine;
